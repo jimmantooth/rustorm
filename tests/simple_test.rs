@@ -48,7 +48,7 @@ impl IsDao for Product{
 impl IsTable for Product{
     fn table() -> Table {
         Table {
-            schema: "bazaar".to_string(),
+            schema: Some("bazaar".to_string()),
             name: "product".to_string(),
             parent_table: None,
             sub_table: vec![],
@@ -61,7 +61,7 @@ impl IsTable for Product{
 
 #[test]
 fn test_simple_query() {
-    let url = "postgres://postgres:p0stgr3s@localhost/bazaar_v6";
+    let url = "postgres://postgres:p0stgr3s@localhost/bazaar_v8";
     let pool = ManagedPool::init(&url, 1).unwrap();
     let db = pool.connect().unwrap();
 

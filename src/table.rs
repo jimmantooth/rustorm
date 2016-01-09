@@ -1,11 +1,43 @@
 use std::fmt;
 use dao::Type;
+use query::Operand;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Foreign {
-    pub schema: String,
+    pub schema: Option<String>,
     pub table: String,
-    pub column: String,
+    pub column: String, 
+}
+
+impl Foreign{
+	
+	pub fn from_str(schema_table: &str, column: &str) -> Self{
+		if schema_table.contains("."){
+			let splinters = schema_table.split(".").collect::<Vec<&str>>();
+			assert!(splinters.len() == 2, "There should only be 2 parts");
+			let schema = splinters[0].to_owned();
+			let table = splinters[1].to_owned();
+			Foreign{
+				schema: Some(schema),
+				table: table,
+				column: column.to_owned(),
+			}
+		}else{
+			Foreign{
+				schema: None,
+				table: schema_table.to_owned(),
+				column: column.to_owned(),
+			}
+		}
+	}
+
+    pub fn complete_table_name(&self) -> String {
+        match self.schema {
+            Some (ref schema) => format!("{}.{}", schema, self.table),
+            None => self.table.to_owned(),
+        }
+    }
+
 }
 
 #[derive(Debug, Clone)]
@@ -17,7 +49,7 @@ pub struct Column {
     pub db_data_type: String,
     pub is_primary: bool,
     pub is_unique: bool,
-    pub default: Option<String>,
+    pub default: Option<Operand>,
     pub comment: Option<String>,
     pub not_null: bool,
     pub foreign: Option<Foreign>,
@@ -167,9 +199,10 @@ impl <'a>RefTable<'a> {
 
 #[derive(Debug)]
 #[derive(Clone)]
+#[derive(Default)]
 pub struct Table {
     ///which schema this belongs
-    pub schema: String,
+    pub schema: Option<String>,
 
     ///the table name
     pub name: String,
@@ -212,11 +245,34 @@ impl PartialEq for Table {
 
 impl Table {
 
+	/// create table with name	
+	pub fn with_name(schema_table: &str)->Self{
+		if schema_table.contains("."){
+			let splinters = schema_table.split(".").collect::<Vec<&str>>();
+			assert!(splinters.len() == 2, "There should only be 2 parts");
+			let schema = splinters[0].to_owned();
+			let table = splinters[1].to_owned();
+			Table{
+				schema: Some(schema),
+				name: table,
+				..Default::default()
+			}
+		}else{
+			Table{
+				schema: None,
+				name: schema_table.to_owned(),
+				..Default::default()
+			}
+		}
+	}
+
     /// return the long name of the table using schema.table_name
     pub fn complete_name(&self) -> String {
-        format!("{}.{}", self.schema, self.name)
+        match self.schema {
+            Some (ref schema) => format!("{}.{}", schema, self.name),
+            None => self.name.to_owned(),
+        }
     }
-
     /// capitalize the first later, if there is underscore remove it then capitalize the next letter
     pub fn struct_name(&self) -> String {
         let mut struct_name = String::new();
@@ -368,7 +424,16 @@ impl Table {
         }
         false
     }
-
+	/// return true when all columns are primary columns
+	/// false if at least 1 is not a primary column
+    pub fn are_primary_columns(&self, column_names: &Vec<String>) -> bool {
+        for c in column_names {
+        	if !self.is_primary(&c){
+				return false;
+			}
+		}
+       	true 
+    }
     /// return all the unique keys of this table
     pub fn unique_columns(&self) -> Vec<&Column> {
         let mut unique_columns = Vec::new();
@@ -391,13 +456,63 @@ impl Table {
         columns.sort_by(|a, b| a.name.cmp(&b.name));
         columns
     }
+	
+	fn get_parent_table<'a>(&self, tables: &'a [Table]) -> Option<&'a Table>{
+		match &self.parent_table{
+			&Some(ref p_table) => {
+				let tmp_table = Table::with_name(&p_table);
+				Some(Self::get_table(&tmp_table.schema, &tmp_table.name, tables))
+			},
+			&None => None
+		}
+	}
+
+	/// tell whether this column exist on the parent column as well.
+	/// does the calculation through the structure, may not correctly reflect the database
+	fn is_inherited_column(self, column: &str, tables: &[Table])->bool{
+		match self.get_parent_table(tables){
+			Some(parent_table) =>{
+				for column in &self.columns{
+					if parent_table.has_column_name(&column.name){
+						return true;
+					}
+				}
+				false
+			},
+			None => false,
+		}
+	}
+
+	fn same_schema(&self, table: &Table)->bool{
+		match &self.schema{
+			&None => match &table.schema{
+				&None => true,
+				&Some(_) => false,
+			},
+			&Some(ref schema) => match &table.schema{
+				&None => false,
+				&Some(ref tschema) => (schema == tschema)
+			}
+		}
+	}
 
     /// return the first match of table name regardless of which schema it belongs to.
     /// get the table definition using the table name from an array of table object
     /// [FIXME] Needs to have a more elegant solution by using HashMap
-    pub fn get_table<'a>(schema: &str, table_name: &str, tables: &'a [Table]) -> &'a Table {
+    pub fn get_table<'a>(schema: &Option<String>, table_name: &str, tables: &'a [Table]) -> &'a Table {
         for t in tables {
-            if t.schema == schema && t.name == table_name {
+            if t.name == table_name && 
+				match schema{
+					&Some(ref schema) => match &t.schema{
+						&Some(ref tschema) => (schema == tschema), 
+						&None => false
+					},	
+					&None => match t.schema{
+						Some(_) => false,
+						None => true
+					} 
+				} 
+		    {
                 return t;
             }
         }
@@ -656,7 +771,18 @@ impl Table {
             let table = foreign.table;
             let schema = foreign.schema;
             let column = foreign.column;
-            if self.name == table && self.schema == schema && self.is_primary(&column) {
+            if self.name == table && self.is_primary(&column) &&
+				match schema{
+					Some(ref schema) => match &self.schema{
+						&Some(ref tschema) => (schema == tschema), 
+						&None => false
+					},	
+					None => match &self.schema{
+						&Some(_) => false,
+						&None => true
+					} 
+				} 
+			{
                 return true;
             }
         }
